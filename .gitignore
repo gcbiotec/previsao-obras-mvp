@@ -1,0 +1,10 @@
+__pycache__/
+.venv/
+.pytest_cache/
+.streamlit/secrets.toml
+
+# Dados reais NUNCA vão para o repositório; só o CSV sintético de demonstração.
+data/*
+!data/contratos_demo.csv
+*.csv
+!data/contratos_demo.csv
