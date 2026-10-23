@@ -42,7 +42,6 @@ def ajustar(contratos: pd.DataFrame, data_corte: date, alpha: float):
 def fmt_pct(x: float) -> str:
     return f"{100 * x:.0f}%"
 
-
 # --------------------------------------------------------------------------- #
 # Barra lateral
 # --------------------------------------------------------------------------- #
