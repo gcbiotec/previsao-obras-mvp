@@ -14,7 +14,7 @@ import aft_core as core
 DEMO_CSV = Path(__file__).parent / "data" / "contratos_demo.csv"
 DATA_CORTE_DEMO = date(2026, 10, 14)
 
-st.set_page_config(page_title="Previsão de término de obras", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Previsão de término de obras", layout="wide")
 
 
 # --------------------------------------------------------------------------- #
@@ -39,11 +39,6 @@ def ajustar(contratos: pd.DataFrame, data_corte: date, alpha: float):
     return df_prep, modelo
 
 
-@st.cache_data(show_spinner=False)
-def validar(df_prep: pd.DataFrame, alpha: float) -> pd.DataFrame:
-    return core.validacao_temporal(df_prep, alpha)
-
-
 def fmt_pct(x: float) -> str:
     return f"{100 * x:.0f}%"
 
@@ -55,20 +50,21 @@ with st.sidebar:
     st.header("Dados")
     fonte = st.radio(
         "Origem dos contratos",
-        ["Demonstração (dados sintéticos)", "Enviar meu CSV"],
+        [#"Demonstração (dados sintéticos)", 
+          "Enviar meu CSV"],
         help="Os dados enviados ficam só na memória da sessão; nada é gravado no repositório.",
     )
 
     if fonte.startswith("Enviar"):
         arquivo = st.file_uploader("CSV de contratos", type="csv")
         if arquivo is None:
-            st.info("Envie um CSV ou volte para os dados de demonstração.")
+            st.info("Envie o CSV de contratos para começar.")
             st.stop()
         contratos = ler_upload(arquivo.getvalue())
         data_corte_padrao = date.today()
-    else:
-        contratos = ler_demo()
-        data_corte_padrao = DATA_CORTE_DEMO
+    # else:
+    #     contratos = ler_demo()
+    #     data_corte_padrao = DATA_CORTE_DEMO
 
     data_corte = st.date_input(
         "Data de corte (\"hoje\")",
@@ -96,26 +92,16 @@ n_invalidos = int((~df_prep["flag_apto_modelagem"].astype(bool)).sum()) - int(
 # --------------------------------------------------------------------------- #
 # Cabeçalho
 # --------------------------------------------------------------------------- #
-st.title("🏗️ Previsão de término de obras")
-st.caption(
-    "Piloto (MVP) · modelo de sobrevivência AFT Log-Normal · "
-    "pergunta: *quanto do prazo original a obra tende a consumir?*"
-)
-if fonte.startswith("Demonstração"):
-    st.warning("Você está vendo **dados sintéticos**. Os números abaixo ilustram o app, não a realidade.")
+st.title("Previsão de término de obras")
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Contratos na base", len(df_prep))
-c2.metric("Concluídos (evento)", modelo.n_eventos_)
-c3.metric("Em andamento (censurados)", modelo.n_censurados_)
-c4.metric("Suspensos (fora do ajuste)", int(df_prep["grupo_modelagem"].eq("SUSPENSO_PARALISADO").sum()))
+
 if n_invalidos > 0:
     st.caption(f"⚠️ {n_invalidos} linha(s) sem data de OS ou prazo válido foram ignoradas.")
 if not modelo.convergiu:
     st.warning("O otimizador não convergiu. Revise os dados antes de usar os resultados.")
 
-aba_sim, aba_and, aba_val, aba_sobre = st.tabs(
-    ["🔮 Simulador", "📋 Contratos em andamento", "📊 Validação", "ℹ️ Sobre"]
+aba_sim, aba_and, aba_sobre = st.tabs(
+    ["🔮 Simulador", "📋 Contratos em andamento", "ℹ️ Sobre"]
 )
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +109,7 @@ aba_sim, aba_and, aba_val, aba_sobre = st.tabs(
 # --------------------------------------------------------------------------- #
 with aba_sim:
     st.subheader("Simule uma obra")
-    esq, dir_ = st.columns([1, 2], gap="large")
+    esq, dir_ = st.columns([1, 2], gap="medium")
 
     with esq:
         prazo = st.number_input("Prazo original (dias)", 30, 3650, 360, step=30)
@@ -146,7 +132,7 @@ with aba_sim:
 
     with dir_:
         m1, m2, m3 = st.columns(3)
-        m1.metric("Duração mediana estimada", f"{q[0.5]:.0f} dias", f"{q[0.5] / prazo:.2f}× o prazo original", delta_color="off")
+        m1.metric("Duração P50 (Prob. 50%)", f"{q[0.5]:.0f} dias", f"{q[0.5] / prazo:.2f}× o prazo original", delta_color="off")
         m2.metric("Prob. de passar do prazo original", fmt_pct(p_orig))
         m3.metric(
             "Prob. de passar do prazo vigente" if teve_aditivo else "Prob. de passar do prazo",
@@ -176,7 +162,7 @@ with aba_sim:
         regras = alt.Chart(marcas).mark_rule(strokeDash=[5, 4]).encode(
             x="dias:Q", color=alt.Color("marca:N", title=None)
         )
-        st.altair_chart((base + regras).properties(height=330), width="stretch")
+        st.altair_chart((base + regras).properties(height=330))
 
 # --------------------------------------------------------------------------- #
 # Aba 2 — Contratos em andamento
@@ -198,14 +184,14 @@ with aba_and:
             "prazo_vigente_atual_dias": "Prazo vigente (d)",
             "tempo_observado_dias": "Decorridos (d)",
             "tempo_relativo_observado": "Decorrido / original",
-            "prob_estourar_prazo_original": "P(passar do original)",
-            "prob_estourar_prazo_vigente": "P(passar do vigente)",
-            "termino_mediana": "Término estimado (mediana)",
-            "termino_p80": "Término (cenário pessimista, P80)",
+            "prob_estourar_prazo_original": "Prob. (passar do original)",
+            "prob_estourar_prazo_vigente": "Prob. (passar do vigente)",
+            "termino_mediana": "Término P50 (Prob. 50%)",
+            "termino_p80": "Término P80 (Prob. 80%)",
         }
         tabela = em_andamento[[c for c in cols if c in em_andamento.columns]].rename(columns=cols)
         tabela["OS"] = pd.to_datetime(tabela["OS"]).dt.date
-        for c in ("Término estimado (mediana)", "Término (cenário pessimista, P80)"):
+        for c in ("Término P50 (Prob. 50%)", "Término P80 (Prob. 80%)"):
             tabela[c] = pd.to_datetime(tabela[c]).dt.date
 
         st.dataframe(
@@ -226,58 +212,7 @@ with aba_and:
         )
 
 # --------------------------------------------------------------------------- #
-# Aba 3 — Validação temporal
-# --------------------------------------------------------------------------- #
-with aba_val:
-    st.subheader("O modelo é melhor que um chute simples?")
-    st.caption(
-        "Validação temporal: cada fold treina só com o que se sabia na data de corte e testa nos contratos seguintes. "
-        "O baseline prevê sempre a mediana histórica."
-    )
-    val = validar(df_prep, alpha)
-    if val.empty:
-        st.info("Poucos contratos para montar os folds de validação.")
-    else:
-        resumo = (
-            val.groupby("modelo", as_index=False)
-            .agg(
-                mae_dias=("mae_duracao_dias", "mean"),
-                mae_rel=("mae_relativo", "mean"),
-                cindex=("cindex", "mean"),
-                folds=("fold", "count"),
-            )
-            .sort_values("mae_dias")
-        )
-        base_mae = float(resumo.loc[resumo["modelo"].str.startswith("Baseline"), "mae_dias"].iloc[0])
-        aft_mae = float(resumo.loc[resumo["modelo"].str.startswith("AFT"), "mae_dias"].iloc[0])
-        ganho = 100 * (base_mae - aft_mae) / base_mae
-
-        v1, v2, v3 = st.columns(3)
-        v1.metric("Erro médio — baseline", f"{base_mae:.0f} dias")
-        v2.metric("Erro médio — AFT", f"{aft_mae:.0f} dias", f"{ganho:+.1f}% vs baseline", delta_color="normal")
-        v3.metric("C-index médio — AFT", f"{resumo.loc[resumo['modelo'].str.startswith('AFT'), 'cindex'].iloc[0]:.2f}", help="0,5 = ordenação aleatória; 1,0 = perfeita.")
-
-        graf = alt.Chart(val).mark_bar().encode(
-            x=alt.X("fold:O", title="Fold (mais recente →)"),
-            y=alt.Y("mae_duracao_dias:Q", title="Erro médio da duração (dias)"),
-            color=alt.Color("modelo:N", title=None),
-            xOffset="modelo:N",
-        )
-        st.altair_chart(graf.properties(height=300), width="stretch")
-
-        st.dataframe(
-            val[["fold", "cutoff", "modelo", "eventos_treino", "censurados_treino", "concluidos_validacao",
-                 "mae_duracao_dias", "mae_relativo", "cindex"]].round(3),
-            hide_index=True,
-            width="stretch",
-        )
-        st.caption(
-            "⚠️ Cada fold valida poucos contratos (≈ 4 a 7). Os resultados são **indicativos**, não conclusivos: "
-            "a diferença entre os modelos pode ser ruído."
-        )
-
-# --------------------------------------------------------------------------- #
-# Aba 4 — Sobre
+# Aba 3 — Sobre
 # --------------------------------------------------------------------------- #
 with aba_sobre:
     st.subheader("Como funciona")
