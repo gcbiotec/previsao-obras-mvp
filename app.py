@@ -166,6 +166,7 @@ with aba_sim:
 # --------------------------------------------------------------------------- #
 # Aba 2 — Contratos em andamento
 # --------------------------------------------------------------------------- #
+
 with aba_and:
     st.subheader("Risco dos contratos em andamento")
     if em_andamento.empty:
