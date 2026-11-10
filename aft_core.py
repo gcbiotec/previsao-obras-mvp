@@ -17,6 +17,12 @@ from scipy.stats import norm
 ALPHA_PADRAO = 1.0
 ALPHAS = [0.1, 1.0, 10.0, 100.0]
 
+# Marcos de probabilidade: dias DEPOIS do prazo de referência (0 = no próprio prazo).
+MARCOS_DIAS = (0, 30, 60)
+
+# Mínimo de obras concluídas para ajustar o "modelo da época" (verificação em contratos reais).
+MIN_EVENTOS_PASSADO = 8
+
 FOLD_STARTS = [28, 35, 42, 49]
 TAMANHO_FOLD = 7
 MIN_FOLD = 5
@@ -240,6 +246,10 @@ def prever_em_andamento(df_prep: pd.DataFrame, modelo: ModeloObras) -> pd.DataFr
     a["prob_estourar_prazo_vigente"] = modelo.prob_exceder(
         prazo, ja, a["limite_relativo_vigente"].to_numpy(float)
     )
+    # P(terminar até o prazo original + m dias), para cada marco m.
+    decorridos = a["tempo_observado_dias"].to_numpy(float)
+    for m in MARCOS_DIAS:
+        a[f"prob_ate_original_mais_{m}"] = prob_ate(modelo, prazo, decorridos, prazo + m)
     mediana = modelo.quantil_condicional(prazo, ja, 0.5) * prazo
     p80 = modelo.quantil_condicional(prazo, ja, 0.8) * prazo
     a["duracao_mediana_dias"] = mediana
@@ -332,3 +342,101 @@ def validacao_temporal(
         pred_aft = m.mediana_relativa(val["prazo_original_dias"].to_numpy(float))
         linhas.append({**info, "modelo": "AFT Log-Normal", **_metricas(val, pred_aft)})
     return pd.DataFrame(linhas)
+
+
+# --------------------------------------------------------------------------- #
+# Marcos de probabilidade, faixas e previsão por contrato (usados pelo app)
+# --------------------------------------------------------------------------- #
+def prob_ate(modelo: ModeloObras, prazo_original, dias_decorridos, limite_dias):
+    """P(a obra terminar até `limite_dias` após a OS | ainda não terminou em `dias_decorridos`).
+
+    "Até" = no dia ou antes (probabilidade acumulada). Se o limite já ficou para trás sem a obra
+    ter terminado, a probabilidade é 0. Aceita escalares ou arrays (um item por contrato).
+    """
+    prazo = np.atleast_1d(np.asarray(prazo_original, dtype=float))
+    ja = np.asarray(dias_decorridos, dtype=float) / prazo
+    lim = np.asarray(limite_dias, dtype=float) / prazo
+    return 1.0 - modelo.prob_exceder(prazo, ja, lim)
+
+
+def nomes_faixas(marcos=MARCOS_DIAS) -> list:
+    """Nomes das faixas entre marcos consecutivos. Com (0, 30, 60):
+    'Até o prazo', '1 a 30 dias depois', '31 a 60 dias depois', 'Mais de 60 dias depois'."""
+    nomes = ["Até o prazo" if marcos[0] == 0 else f"Até {marcos[0]} dias depois"]
+    for ant, atual in zip(marcos[:-1], marcos[1:]):
+        nomes.append(f"{ant + 1} a {atual} dias depois")
+    nomes.append(f"Mais de {marcos[-1]} dias depois")
+    return nomes
+
+
+def faixa_do_atraso(atraso_dias: float, marcos=MARCOS_DIAS) -> int:
+    """Índice (em `nomes_faixas`) da faixa em que cai um término `atraso_dias` após o prazo de referência."""
+    for i, m in enumerate(marcos):
+        if atraso_dias <= m:
+            return i
+    return len(marcos)
+
+
+def faixas_por_marco(modelo: ModeloObras, prazo_original, dias_decorridos, limite_dias, marcos=MARCOS_DIAS) -> list:
+    """Probabilidade de a obra terminar em cada faixa (somam 1): lista de (nome, prob)."""
+    acum = [float(prob_ate(modelo, prazo_original, dias_decorridos, limite_dias + m)[0]) for m in marcos]
+    partes = [acum[0]] + [max(b - a, 0.0) for a, b in zip(acum[:-1], acum[1:])] + [max(1.0 - acum[-1], 0.0)]
+    return list(zip(nomes_faixas(marcos), partes))
+
+
+def previsao_contrato(modelo: ModeloObras, prazo_original, dias_decorridos, prazo_vigente=None, marcos=MARCOS_DIAS) -> dict:
+    """Tudo o que o app mostra para um contrato, condicional a a obra ainda não ter terminado.
+
+    prazo_vigente: prazo em dias contados da OS (original + aditivos). None = sem aditivo conhecido.
+    """
+    prazo = float(prazo_original)
+    decorridos = float(dias_decorridos)
+    vigente = float(prazo_vigente) if prazo_vigente else prazo
+    ja = decorridos / prazo
+
+    def _marcos(limite):
+        return [
+            {"offset": m, "limite_dias": limite + m,
+             "prob_ate": float(prob_ate(modelo, prazo, decorridos, limite + m)[0])}
+            for m in marcos
+        ]
+
+    quantis = {
+        f"p{int(round(q * 100))}": float(modelo.quantil_condicional(prazo, ja, q)[0]) * prazo
+        for q in (0.1, 0.5, 0.8, 0.9)
+    }
+    return {
+        "dias_decorridos": decorridos,
+        "prazo_original": prazo,
+        "prazo_vigente": vigente,
+        "quantis": quantis,
+        "original": _marcos(prazo),
+        "vigente": _marcos(vigente) if vigente > prazo else None,
+        "faixas": faixas_por_marco(modelo, prazo, decorridos, prazo, marcos),
+        "prob_estourar_original": float(modelo.prob_exceder(prazo, ja, 1.0)[0]),
+        "prob_estourar_vigente": float(modelo.prob_exceder(prazo, ja, vigente / prazo)[0]),
+    }
+
+
+def treinar_no_passado(df_prep: pd.DataFrame, cutoff, alpha: float = ALPHA_PADRAO,
+                       min_eventos: int = MIN_EVENTOS_PASSADO):
+    """Modelo como ele seria ajustado na data `cutoff`, usando só o que se sabia até então.
+
+    Entram os contratos com OS até `cutoff`; quem não tinha concluído até `cutoff` entra como
+    censurado (mesmo que hoje já tenha terminado). Retorna (modelo, info); modelo = None quando
+    havia menos de `min_eventos` obras concluídas ou o ajuste não convergiu.
+    """
+    cutoff = pd.Timestamp(cutoff)
+    base = df_prep[df_prep["flag_apto_modelagem"].eq(1)]
+    train = _treino_no_passado(base, cutoff)
+    info = {
+        "cutoff": cutoff.date(),
+        "eventos": int(train["evento_fold"].sum()),
+        "censurados": int(train["evento_fold"].eq(0).sum()),
+    }
+    if info["eventos"] < min_eventos:
+        return None, info
+    modelo = ModeloObras(alpha).fit(
+        train["prazo_original_dias"], train["tempo_rel_fold"], train["evento_fold"]
+    )
+    return (modelo if modelo.convergiu else None), info
