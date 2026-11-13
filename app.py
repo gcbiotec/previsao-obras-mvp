@@ -1,5 +1,4 @@
 """Piloto: previsão de término de obras (AFT Log-Normal) em Streamlit."""
-
 from __future__ import annotations
 
 import io
@@ -28,6 +27,15 @@ COR_REFERENCIA = "#898781"                                    # linhas de refer�
 COR_DESTAQUE = "#eb6834"                                      # o resultado real
 
 st.set_page_config(page_title="Previsão de término de obras", page_icon="🏗️", layout="wide")
+
+# Garante que o app e o núcleo são da mesma versão (evita um KeyError difícil de entender após um deploy parcial).
+if not hasattr(core, "MARCOS_LONGOS_DIAS"):
+    st.error(
+        "O arquivo **aft_core.py** carregado está desatualizado em relação ao app.py. "
+        f"Arquivo em uso: `{core.__file__}`. Envie o aft_core.py novo ao repositório (junto com o app.py) "
+        "e depois use *Manage app → Reboot app*."
+    )
+    st.stop()
 
 # Datas e rótulos longos cortavam nos cartões (st.metric); reduz a fonte do valor e deixa o rótulo quebrar linha.
 st.markdown(
