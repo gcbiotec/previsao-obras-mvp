@@ -1,4 +1,5 @@
 """Piloto: previsão de término de obras (AFT Log-Normal) em Streamlit."""
+
 from __future__ import annotations
 
 import io

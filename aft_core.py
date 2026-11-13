@@ -1,8 +1,6 @@
 """Núcleo do modelo AFT Log-Normal (portado do notebook 13C).
 
 Sem dependência de scikit-learn: só numpy, pandas e scipy.
-A lógica de classificação dos contratos, o target relativo e a validação
-temporal seguem exatamente o notebook ``13C_target_relativo_dados_reais``.
 """
 from __future__ import annotations
 
