@@ -157,7 +157,7 @@ def grafico_curva(modelo, data_os, prazo, vigente, decorridos, p50_dias, p90_dia
 
     marcas = [("Prazo original", prazo, [6, 4])]
     if vigente > prazo:
-        marcas.append(("Prazo vigente", vigente, [2, 3]))
+        marcas.append(("Prazo aditivado", vigente, [2, 3]))
     if decorridos > 0:
         marcas.append(("Hoje", decorridos, [1, 0]))
     marcas.append(("P50", p50_dias, [8, 2, 2, 2]))
@@ -207,17 +207,16 @@ def grafico_curva(modelo, data_os, prazo, vigente, decorridos, p50_dias, p90_dia
 # --------------------------------------------------------------------------- #
 # Painel de previsão (usado no simulador e na aba de contratos reais)
 # --------------------------------------------------------------------------- #
-def painel_previsao(modelo, data_os, prazo, vigente, decorridos, real_dias=None):
-    """Mostra marcos, faixas, P50/P80 e curva. `vigente=None` = sem aditivo conhecido. Devolve o dict da previsão."""
-    prazo = float(prazo)
-    vigente_dias = float(vigente) if vigente else prazo
-    p = core.previsao_contrato(modelo, prazo, decorridos, vigente_dias, MARCOS)
+def titulo_marco_adit(offset: int) -> str:
+    return "Até o prazo aditivado" if offset == 0 else f"Até {offset} dias depois do prazo aditivado"
 
-    st.markdown("##### Probabilidade de a obra terminar…")
-    cols = st.columns(len(MARCOS))
-    for col, it in zip(cols, p["original"]):
+
+def linha_marcos(itens, data_os, decorridos, titulo):
+    """Uma linha de cartões com a probabilidade acumulada em cada marco."""
+    cols = st.columns(len(itens))
+    for col, it in zip(cols, itens):
         col.metric(
-            titulo_marco(it["offset"]),
+            titulo(it["offset"]),
             fmt_pct(it["prob_ate"]),
             help=("Probabilidade acumulada: a obra concluir **até** essa data (no dia ou antes), "
                   "dado que ainda não terminou hoje."),
@@ -225,7 +224,25 @@ def painel_previsao(modelo, data_os, prazo, vigente, decorridos, real_dias=None)
         passou = decorridos >= it["limite_dias"]
         col.caption(fmt_data(soma_dias(data_os, it["limite_dias"])) + ("  ·  já passou" if passou else ""))
 
-    ref = [("Prazo original", p["original"])] + ([("Prazo vigente", p["vigente"])] if p["vigente"] else [])
+
+def painel_previsao(modelo, data_os, prazo, vigente, decorridos, real_dias=None):
+    """Mostra marcos, faixas, P50/P80 e curva. `vigente=None` = sem aditivo conhecido. Devolve o dict da previsão."""
+    prazo = float(prazo)
+    vigente_dias = float(vigente) if vigente else prazo
+    p = core.previsao_contrato(modelo, prazo, decorridos, vigente_dias, MARCOS)
+    adit = int(round(vigente_dias - prazo)) if p["vigente"] else 0
+
+    st.markdown("##### Probabilidade de a obra terminar…")
+    if p["vigente"]:
+        st.caption("**Contados do prazo original**")
+    linha_marcos(p["original"], data_os, decorridos, titulo_marco)
+    if p["vigente"]:
+        st.caption(f"**Contados do prazo aditivado** (prazo original + {adit} dias de aditivo)")
+        linha_marcos(p["vigente"], data_os, decorridos, titulo_marco_adit)
+
+    ref = [("Prazo original", p["original"] + p["original_longo"])]
+    if p["vigente"]:
+        ref.append(("Prazo aditivado", p["vigente"] + p["vigente_longo"]))
     tabela = pd.DataFrame([
         {
             "Referência": nome,
@@ -235,7 +252,8 @@ def painel_previsao(modelo, data_os, prazo, vigente, decorridos, real_dias=None)
         }
         for nome, itens in ref for it in itens
     ])
-    with st.expander("Ver todos os marcos em tabela" + (" (inclui o prazo vigente)" if p["vigente"] else ""),
+    with st.expander("Ver todos os marcos em tabela (inclui 120, 150 e 180 dias)"
+                     + (" e o prazo aditivado" if p["vigente"] else ""),
                      expanded=bool(p["vigente"])):
         st.dataframe(
             tabela, hide_index=True, width="stretch",
@@ -244,8 +262,17 @@ def painel_previsao(modelo, data_os, prazo, vigente, decorridos, real_dias=None)
         )
 
     st.markdown("##### Em que faixa a obra deve terminar?")
-    st.caption("As faixas são excludentes e somam 100%. Faixas mais escuras = término mais tardio.")
-    st.altair_chart(grafico_faixas(p["faixas"]))
+    st.caption("As faixas são excludentes e somam 100%. Faixas mais escuras = término mais tardio. "
+               "Cada régua conta os dias depois do prazo indicado.")
+    blocos = [("Prazo original", p["faixas"], p["faixas_longas"])]
+    if p["vigente"]:
+        blocos.append(("Prazo aditivado", p["faixas_vigente"], p["faixas_longas_vigente"]))
+    for nome, curtas, longas in blocos:
+        st.markdown(f"**{nome}**")
+        st.caption("Faixas curtas: até o prazo, 30 e 60 dias depois")
+        st.altair_chart(grafico_faixas(curtas))
+        st.caption("Faixas longas: até 120, 150 e 180 dias depois, e mais que isso")
+        st.altair_chart(grafico_faixas(longas))
 
     q = p["quantis"]
     st.markdown("##### Quando deve terminar")
@@ -255,7 +282,7 @@ def painel_previsao(modelo, data_os, prazo, vigente, decorridos, real_dias=None)
     m2.metric("Término P50 (mediana)", fmt_data(soma_dias(data_os, q["p50"])))
     m3.metric("Término P80 (pessimista)", fmt_data(soma_dias(data_os, q["p80"])), help="80% de chance de terminar até esta data.")
     m4.metric(
-        "Prob. de passar do prazo vigente" if p["vigente"] else "Prob. de passar do prazo",
+        "Prob. de passar do prazo aditivado" if p["vigente"] else "Prob. de passar do prazo",
         fmt_pct(p["prob_estourar_vigente"]),
     )
     st.caption(
@@ -293,6 +320,14 @@ with st.sidebar:
         help="Contratos sem conclusão até esta data são tratados como censurados (ainda em andamento).",
     )
 
+    if {"data_fim_observacao", "evento_conclusao"} <= set(contratos.columns):
+        # a base já traz a data de corte com que foi gerada (a dos contratos em andamento)
+        _cortes = pd.to_datetime(
+            contratos.loc[contratos["evento_conclusao"].eq(0), "data_fim_observacao"], errors="coerce"
+        ).dropna().unique()
+        if len(_cortes) == 1 and pd.Timestamp(_cortes[0]).date() != data_corte:
+            st.caption(f"Esta base foi gerada com corte em {fmt_data(_cortes[0])}.")
+
     with st.expander("Avançado"):
         alpha = st.select_slider(
             "Regularização (alpha)", options=core.ALPHAS, value=core.ALPHA_PADRAO
@@ -321,7 +356,7 @@ if not modelo.convergiu:
     st.warning("O otimizador não convergiu. Revise os dados antes de usar os resultados.")
 
 aba_sim, aba_real, aba_and, aba_sobre = st.tabs(
-    ["Simulador", "Contratos reais", "Contratos em andamento", "Sobre..."]
+    ["🔮 Simulador", "🔎 Contratos reais", "📋 Contratos em andamento", "ℹ️ Sobre"]
 )
 
 # --------------------------------------------------------------------------- #
@@ -333,8 +368,8 @@ with aba_sim:
         st.markdown(
             """
 - **Prazo original:** o prazo da ordem de serviço, antes de qualquer aditivo.
-- **Aditivos de prazo:** cada aditivo soma dias ao contrato. *Exemplo:* prazo original de 360 dias + aditivo de 60 dias
-  + aditivo de 30 dias = **prazo vigente de 450 dias**.
+- **Aditivos de prazo (dias):** o total de dias acrescentados por aditivos. *Exemplo:* prazo original de 360 dias
+  e 90 dias de aditivo (60 + 30) = **prazo aditivado de 450 dias**. Deixe 0 se não houve aditivo.
 - **Hoje:** o modelo calcula quantos dias já se passaram desde a OS. Se a obra ainda não começou, deixe a data de hoje
   igual à data da OS.
 - A previsão assume que a obra **ainda não terminou** hoje.
@@ -353,16 +388,13 @@ with aba_sim:
             help="Prazo da ordem de serviço, antes de qualquer aditivo.",
         )
 
-        st.markdown("##### 2. Aditivos de prazo")
-        n_adit = st.number_input("Quantos aditivos de prazo houve?", 0, 6, 0, step=1, key="sim_n_adit")
-        dias_adit = [
-            st.number_input(f"Aditivo {i + 1}: dias acrescentados", 1, 2000, 30, step=15, key=f"sim_adit_{i}")
-            for i in range(int(n_adit))
-        ]
-        total_adit = int(sum(dias_adit))
+        total_adit = int(st.number_input(
+            "Aditivos de prazo (dias)", 0, 3650, 0, step=30, key="sim_adit_dias",
+            help="Total de dias acrescentados por aditivos. Deixe 0 se não houve aditivo.",
+        ))
         vigente = int(prazo) + total_adit
 
-        st.markdown("##### 3. Situação hoje")
+        st.markdown("##### 2. Situação hoje")
         hoje_sim = st.date_input("Data de hoje (referência)", value=data_corte, key="sim_hoje", format="DD/MM/YYYY")
         decorridos = max((hoje_sim - data_os_sim).days, 0)
         if hoje_sim < data_os_sim:
@@ -374,16 +406,19 @@ with aba_sim:
         r1.metric("Término original", fmt_data(soma_dias(data_os_sim, prazo)), help="Data da OS + prazo original.")
         r1.caption(f"{int(prazo)} dias de prazo")
         r2.metric("Aditivos de prazo", f"+{total_adit} dias" if total_adit else "Nenhum")
-        r2.caption(f"{int(n_adit)} aditivo(s)")
-        r3.metric("Término vigente", fmt_data(soma_dias(data_os_sim, vigente)), help="Término original + aditivos.")
+        r3.metric("Término aditivado", fmt_data(soma_dias(data_os_sim, vigente)), help="Término original + aditivos.")
         r3.caption(f"{vigente} dias de prazo")
-        r4.metric("Qtd. dias decorridos", f"dia {decorridos}", help="Dias desde a OS até a data de referência.")
+        r4.metric("Hoje", f"dia {decorridos}", help="Dias desde a OS até a data de referência.")
         r4.caption(f"{100 * decorridos / prazo:.0f}% do prazo original")
 
         if decorridos >= vigente:
-            st.warning("Hoje já passou do prazo vigente e a obra não terminou: a probabilidade de estourar é de 100%.")
+            st.warning(
+                "Hoje já passou do prazo aditivado e a obra não terminou: a probabilidade de estourar é de 100%."
+                if total_adit else
+                "Hoje já passou do prazo original e a obra não terminou: a probabilidade de estourar é de 100%."
+            )
         elif decorridos >= prazo:
-            st.info("Hoje já passou do prazo original, mas ainda está dentro do prazo vigente (graças aos aditivos).")
+            st.info("Hoje já passou do prazo original, mas ainda está dentro do prazo aditivado.")
 
         painel_previsao(modelo, data_os_sim, prazo, vigente if total_adit else None, decorridos)
 
@@ -411,10 +446,17 @@ with aba_real:
         "SUSPENSO_PARALISADO": "suspenso/paralisado",
     }
 
+    def _txt(r, col):
+        v = r.get(col)
+        return "" if v is None or pd.isna(v) else str(v)
+
     def rotulo_contrato(r) -> str:
-        tipo = r.get("classificacao_contrato")
-        tipo = "" if tipo is None or pd.isna(tipo) else f"{tipo} · "
-        return f"{r['id_contrato']} · {tipo}OS {fmt_data(r['data_os'])} · {SITUACAO[r['grupo_modelagem']]}"
+        partes = [str(r["id_contrato"])]
+        for col in ("Numero_contrato", "Nome_predio", "classificacao_contrato"):
+            if _txt(r, col):
+                partes.append(_txt(r, col))
+        partes += [f"OS {fmt_data(r['data_os'])}", SITUACAO[r["grupo_modelagem"]]]
+        return " · ".join(partes)
 
     if reais.empty:
         st.info("Nenhum contrato neste filtro.")
@@ -431,7 +473,9 @@ with aba_real:
         data_os = c["data_os"]
         prazo_c = int(c["prazo_original_dias"])
         vigente_c = int(round(c["prazo_vigente_atual_dias"]))
-        adit_c = max(vigente_c - prazo_c, 0)
+        adit_c = int(round(c["dias_aditivados_app"]))
+        da_tabela = bool(c["aditivos_da_tabela"])
+        n_adit_c = _txt(c, "n_aditivos_prazo")
         grupo = c["grupo_modelagem"]
         concluido = grupo == "CONCLUIDO_COM_TARGET"
         status_txt = str(c.get("status_final_controle", "—"))
@@ -440,14 +484,35 @@ with aba_real:
         a1, a2, a3, a4 = st.columns(4)
         a1.metric("Ordem de serviço", fmt_data(data_os))
         a1.caption(f"Status no controle: {status_txt}")
+        if _txt(c, "Nome_predio") or _txt(c, "Numero_contrato"):
+            st.markdown(
+                f"**Prédio:** {_txt(c, 'Nome_predio') or '—'}  ·  **Contrato nº** {_txt(c, 'Numero_contrato') or '—'}"
+                + (f"  ·  **Tipo:** {_txt(c, 'classificacao_contrato')}" if _txt(c, "classificacao_contrato") else "")
+            )
         a2.metric("Prazo original", fmt_dias(prazo_c))
         a2.caption(f"Término original: {fmt_data(soma_dias(data_os, prazo_c))}")
         a3.metric("Aditivos de prazo", f"+{adit_c} dias" if adit_c else "Nenhum")
-        a3.caption("Término vigente − término original")
+        a3.caption(
+            (f"{int(float(n_adit_c))} aditivo(s) na tabela de aditivos" if n_adit_c else "Soma dos aditivos de prazo")
+            if da_tabela else "Término vigente − término original"
+        )
         a4.metric("Prazo vigente", fmt_dias(vigente_c))
         a4.caption(f"Término vigente: {fmt_data(soma_dias(data_os, vigente_c))}")
-        if adit_c:
-            st.caption("O CSV traz só o total de dias aditivados (calculado pelas datas), não cada aditivo separadamente.")
+        if da_tabela:
+            if int(c.get("flag_dias_divergem_por_data", 0) or 0):
+                por_data = c.get("dias_aditivados_por_data")
+                st.warning(
+                    f"A soma dos aditivos ({adit_c} dias) difere da diferença entre as datas"
+                    + (f" ({int(por_data)} dias)" if por_data is not None and pd.notna(por_data) else "")
+                    + ". O app usa a soma da tabela de aditivos."
+                )
+            if int(c.get("flag_aditivo_pos_observacao", 0) or 0):
+                st.info(
+                    "Parte do aditivo foi assinada depois da conclusão da obra, então não era conhecida "
+                    "durante a execução."
+                )
+        elif adit_c:
+            st.caption("Este CSV traz só as datas: os dias aditivados são calculados pela diferença entre elas.")
 
         if concluido:
             conclusao = c["data_conclusao_definitiva"]
@@ -456,7 +521,7 @@ with aba_real:
             b1.metric("Conclusão registrada", fmt_data(conclusao))
             b2.metric("Duração real", fmt_dias(dur))
             b2.caption(f"{dur / prazo_c:.2f}× o prazo original")
-            if status_txt.upper().startswith("EM ANDAMENTO"):
+            if status_txt.upper().startswith("EM ANDAMENTO") or int(c.get("flag_status_desatualizado", 0) or 0):
                 st.warning(
                     "No controle este contrato consta como EM ANDAMENTO, mas tem data de conclusão preenchida. "
                     "O modelo o trata como concluído (regra do notebook)."
@@ -529,8 +594,8 @@ with aba_real:
             )
             if adit_c:
                 st.caption(
-                    f"Este contrato recebeu +{adit_c} dias de aditivo ao longo da obra. Esse prazo vigente final não "
-                    "era conhecido no dia da previsão (o CSV não traz a data de cada aditivo), por isso a verificação "
+                    f"Este contrato recebeu +{adit_c} dias de aditivo ao longo da obra. O CSV não traz a data de "
+                    "assinatura de cada aditivo, então o prazo aditivado daquele dia não é conhecido e a verificação "
                     "usa o prazo original."
                 )
         else:
@@ -560,9 +625,12 @@ with aba_and:
         )
         cols = {
             "id_contrato": "Contrato",
+            "Numero_contrato": "Nº contrato",
+            "Nome_predio": "Prédio",
             "classificacao_contrato": "Tipo",
             "data_os": "OS",
             "prazo_original_dias": "Prazo original (d)",
+            "dias_aditivados_app": "Aditivos (d)",
             "prazo_vigente_atual_dias": "Prazo vigente (d)",
             "tempo_observado_dias": "Decorridos (d)",
             "tempo_relativo_observado": "Decorrido / original",
@@ -625,7 +693,9 @@ o **modelo atual** já viu o desfecho da obra e é otimista. Com poucos concluí
 {core.MIN_EVENTOS_PASSADO}), o modelo da época não pode ser ajustado.
 
 **Colunas esperadas no CSV:** `{colunas_csv}`.
-(`data_termino_original` e `classificacao_contrato` são opcionais.)
+(Opcionais: `data_termino_original`, `classificacao_contrato`, `Numero_contrato`, `Nome_predio`, `n_aditivos_prazo` e
+os flags da base nova. **`dias_aditivados`**, quando existe, é a soma dos dias da tabela de aditivos de prazo e é usada
+no lugar da diferença entre datas.)
 
 ### Limitações do piloto
 - Base pequena (dezenas de contratos) e **uma única variável**: a previsão depende só do prazo original.

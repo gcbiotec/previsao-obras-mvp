@@ -19,6 +19,7 @@ ALPHAS = [0.1, 1.0, 10.0, 100.0]
 
 # Marcos de probabilidade: dias DEPOIS do prazo de referência (0 = no próprio prazo).
 MARCOS_DIAS = (0, 30, 60)
+MARCOS_LONGOS_DIAS = (120, 150, 180)  # segunda régua de faixas: dias depois do prazo de referência
 
 # Mínimo de obras concluídas para ajustar o "modelo da época" (verificação em contratos reais).
 MIN_EVENTOS_PASSADO = 8
@@ -85,13 +86,23 @@ def preparar_contratos(contratos: pd.DataFrame, data_corte) -> pd.DataFrame:
     df["tempo_relativo_observado"] = df["tempo_observado_dias"] / df["prazo_original_dias"]
     df["log_prazo_original"] = np.log1p(df["prazo_original_dias"])
 
-    if "data_termino_vigente_final" in df.columns:
-        prazo_vigente = (df["data_termino_vigente_final"] - df["data_os"]).dt.days
-        df["prazo_vigente_atual_dias"] = prazo_vigente.where(
-            prazo_vigente > 0, df["prazo_original_dias"]
-        )
+    # Dias aditivados. Base nova: soma dos dias da tabela de aditivos de prazo (coluna `dias_aditivados`).
+    # Base antiga (sem essa coluna): diferença entre a data vigente e a data original, como antes.
+    da_tabela = "dias_aditivados" in df.columns
+    df["aditivos_da_tabela"] = da_tabela
+    if da_tabela:
+        adit = pd.to_numeric(df["dias_aditivados"], errors="coerce").fillna(0).clip(lower=0)
+        df["dias_aditivados_app"] = adit
+        df["prazo_vigente_atual_dias"] = df["prazo_original_dias"] + adit
     else:
-        df["prazo_vigente_atual_dias"] = df["prazo_original_dias"]
+        if "data_termino_vigente_final" in df.columns:
+            prazo_vigente = (df["data_termino_vigente_final"] - df["data_os"]).dt.days
+            df["prazo_vigente_atual_dias"] = prazo_vigente.where(
+                prazo_vigente > 0, df["prazo_original_dias"]
+            )
+        else:
+            df["prazo_vigente_atual_dias"] = df["prazo_original_dias"]
+        df["dias_aditivados_app"] = (df["prazo_vigente_atual_dias"] - df["prazo_original_dias"]).clip(lower=0)
     df["limite_relativo_vigente"] = df["prazo_vigente_atual_dias"] / df["prazo_original_dias"]
     return df
 
@@ -384,22 +395,27 @@ def faixas_por_marco(modelo: ModeloObras, prazo_original, dias_decorridos, limit
     return list(zip(nomes_faixas(marcos), partes))
 
 
-def previsao_contrato(modelo: ModeloObras, prazo_original, dias_decorridos, prazo_vigente=None, marcos=MARCOS_DIAS) -> dict:
+def previsao_contrato(modelo: ModeloObras, prazo_original, dias_decorridos, prazo_vigente=None,
+                      marcos=MARCOS_DIAS, marcos_longos=MARCOS_LONGOS_DIAS) -> dict:
     """Tudo o que o app mostra para um contrato, condicional a a obra ainda não ter terminado.
 
     prazo_vigente: prazo em dias contados da OS (original + aditivos). None = sem aditivo conhecido.
+    Chaves com "_longas"/"_longo" usam `marcos_longos` (120/150/180 dias depois do prazo de referência).
+    As chaves "vigente*" são None quando não há aditivo.
     """
     prazo = float(prazo_original)
     decorridos = float(dias_decorridos)
     vigente = float(prazo_vigente) if prazo_vigente else prazo
     ja = decorridos / prazo
 
-    def _marcos(limite):
+    def _marcos(limite, offsets=marcos):
         return [
             {"offset": m, "limite_dias": limite + m,
              "prob_ate": float(prob_ate(modelo, prazo, decorridos, limite + m)[0])}
-            for m in marcos
+            for m in offsets
         ]
+
+    tem_adit = vigente > prazo
 
     quantis = {
         f"p{int(round(q * 100))}": float(modelo.quantil_condicional(prazo, ja, q)[0]) * prazo
@@ -411,8 +427,15 @@ def previsao_contrato(modelo: ModeloObras, prazo_original, dias_decorridos, praz
         "prazo_vigente": vigente,
         "quantis": quantis,
         "original": _marcos(prazo),
-        "vigente": _marcos(vigente) if vigente > prazo else None,
+        "vigente": _marcos(vigente) if tem_adit else None,
+        "original_longo": _marcos(prazo, marcos_longos),
+        "vigente_longo": _marcos(vigente, marcos_longos) if tem_adit else None,
         "faixas": faixas_por_marco(modelo, prazo, decorridos, prazo, marcos),
+        "faixas_vigente": faixas_por_marco(modelo, prazo, decorridos, vigente, marcos) if tem_adit else None,
+        "faixas_longas": faixas_por_marco(modelo, prazo, decorridos, prazo, marcos_longos),
+        "faixas_longas_vigente": (
+            faixas_por_marco(modelo, prazo, decorridos, vigente, marcos_longos) if tem_adit else None
+        ),
         "prob_estourar_original": float(modelo.prob_exceder(prazo, ja, 1.0)[0]),
         "prob_estourar_vigente": float(modelo.prob_exceder(prazo, ja, vigente / prazo)[0]),
     }
